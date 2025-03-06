@@ -21,9 +21,11 @@ rlibrary(pacman)
 p_load(
   car,
   dplyr,
+  ggplot,
   matrixStats,
   purrr,
   questionr,
+  scales,
   srvyr,
   survey,
   stringr,
@@ -301,3 +303,62 @@ The output of the data is found on the table below:
 | **Total**|          |       111693 |       227728 |       227323 |       270762 |        375344 |  **1212850** |
 
 The total number of Hispanics in Bexar County calculated here (1,212,850), categorized by age and household size (1-person, 2-person, 3-person, 4-person, and 5+ person households), closely aligns with the 2023 ACS 5-year estimate of 1,212,855. This estimate can be verified through the Census Bureau's official data portal: [ACS 2023 5-Year Hispanic or Latino Data for Bexar County](https://data.census.gov/table/ACSDP5Y2023.DP05?q=Hispanic+or+Latino&g=050XX00US48029).
+
+# Population Distribution by Age Group using ggplot2 visualizations
+### Summary of Visualizations
+
+The visualizations created in this analysis aim to clearly illustrate the demographic composition of the Hispanic population in Bexar County, Texas. They specifically highlight the distribution of this population across various age groups and household sizes. Utilizing bar charts and stacked bar graphs generated with `ggplot2`, these visualizations facilitate quick interpretation of demographic patterns, making it easier to identify trends and differences in population composition across multiple dimensions.
+## Population Distribution by Age Group
+
+```r
+df_long <- multid %>%
+  pivot_longer(cols = starts_with("HISPANIC"), 
+               names_to = "Household_Size", 
+               values_to = "Population") %>%
+  group_by(agegrp) %>%
+  summarize(Total = sum(Population, na.rm = TRUE))
+
+# Plot with formatted y-axis
+ggplot(df_long, aes(x = agegrp, y = Total)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Hispanic Population by Age Group",
+       x = "Age Group",
+       y = "Population") +
+  scale_y_continuous(labels = comma) +  # adds comma formatting
+  theme_minimal()
+```
+![image](https://github.com/user-attachments/assets/1017b85b-02bb-443f-a81d-69ee05a959ff)
+
+## Stacked Bar Chart by Age Group and Household Size
+```r
+df_stacked <- multid %>%
+  pivot_longer(cols = starts_with("HISPANIC"), 
+               names_to = "Household_Size", 
+               values_to = "Population")
+
+ggplot(df_stacked, aes(x = agegrp, y = Population, fill = Household_Size)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Hispanic Population by Age Group and Household Size",
+       x = "Age Group",
+       y = "Population",
+       fill = "Household Size") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set3")
+```
+![image](https://github.com/user-attachments/assets/a9994fc6-58b4-4849-b371-f855b240fc49)
+
+## Heatmap of Population by Age Group and Household Size
+```r
+ggplot(df_stacked, aes(x = Household_Size, y = agegrp, fill = Population)) +
+  geom_tile(color = "white") +
+  labs(title = "Heatmap of Hispanic Population by Age and Household Size",
+       x = "Household Size",
+       y = "Age Group",
+       fill = "Population") +
+  scale_fill_gradient(low = "lightyellow", high = "red") +
+  theme_minimal()
+```
+![image](https://github.com/user-attachments/assets/ed708ff1-cff9-4489-ab18-ea3029e37a4d)
+
+
+
