@@ -13,7 +13,7 @@ getwd()
 
 ## Load library
 ```r
-rlibrary(pacman)
+library(pacman)
 ```
 
 ## Install & load packages
