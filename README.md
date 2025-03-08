@@ -345,7 +345,8 @@ ggplot(df_stacked, aes(x = agegrp, y = Population, fill = Household_Size)) +
   theme_minimal() +
   scale_fill_brewer(palette = "Set3")
 ```
-![image](https://github.com/user-attachments/assets/a9994fc6-58b4-4849-b371-f855b240fc49)
+![image](https://github.com/user-attachments/assets/448aa55c-9e9e-4636-8276-a3b1024745dd)
+
 
 ## Heatmap of Population by Age Group and Household Size
 ```r
@@ -358,7 +359,8 @@ ggplot(df_stacked, aes(x = Household_Size, y = agegrp, fill = Population)) +
   scale_fill_gradient(low = "lightyellow", high = "red") +
   theme_minimal()
 ```
-![image](https://github.com/user-attachments/assets/ed708ff1-cff9-4489-ab18-ea3029e37a4d)
+![image](https://github.com/user-attachments/assets/7d59edf8-187c-4baa-b9d3-db43066b61d8)
+
 
 
 
