@@ -1,5 +1,8 @@
-# How to develop a demographic multi-dimensional contingency table using PUMS data and 'pivot_wider'
-The manual process of downloading separate household and individual-level Public Use Microdata Sample (PUMS) files is now obsolete. Using the `tidycensus` package, downloading, processing, and summarizing PUMS data in R has become straightforward and efficient. In this exercise, we'll create a demographic multi-dimensional contingency table. This table aggregates key demographic indicators—including age groups, Hispanic population, and household sizes (1-person, 2-person, 3-person, 4-person, and 5+ person households)—specifically for Bexar County, TX.
+## Developing a Demographic Multi-Dimensional Contingency Table Using PUMS Data and `pivot_wider`  
+
+In this exercise, we'll construct a demographic multi-dimensional contingency table, a key component of a contract I managed that involved developing regional household distribution tables for Metropolitan Planning Organizations (MPOs) in Texas. This table aggregates critical demographic indicators—including income groups, household sizes (ranging from 1-person to 5+ person households), and the number of workers per household (from 0 to 2+)—using Public Use Microdata Sample (PUMS) data for Bexar County, TX. The resulting table serves as input for travel demand models.  
+
+**Note:** The income categories used in this example are for demonstration purposes only. In practice, these categories are often derived from household surveys provided by the governing agency. Additionally, adjustments based on the Consumer Price Index for All Urban Consumers (CPI-U) are sometimes necessary, but such adjustments have not been applied in this example.
 
 ## Set working directory
 ```r
@@ -21,17 +24,19 @@ library(pacman)
 p_load(
   car,
   dplyr,
-  ggplot,
+  ggplot2,
   matrixStats,
   purrr,
   questionr,
+  sf,
   scales,
   srvyr,
   survey,
   stringr,
   tidycensus,
   tidyverse,
-  tidyr
+  tidyr,
+  tigris
 )
 ```
 
@@ -61,12 +66,14 @@ pums_vars_2023 %>%
 
 ## Download PUMS data from the Census API
 ```r
+# Download PUMS data from the Census API
 tx_pums <- get_pums(
-  variables = c("PUMA", "SEX", "AGEP", "RAC1P", "HISP", "RELSHIPP", "NP", "ESR"),
+  variables = c("PUMA", "SEX", "AGEP", "RELSHIPP", "NP", "ESR", "SERIALNO", "PWGTP", "STATE", "WAGP", "ADJINC", "HINCP", "WGTP"),
   state = "TX",
   survey = "acs5",
   year = 2023
 )
+
 ```
 
 ## Filter PUMS data to include specific PUMA codes
@@ -91,6 +98,57 @@ pumas$county <- Recode(
 )
 ```
 
+## Convert SERIALNO into string
+```r
+pumas$SERIALNO <- as.character(pumas$SERIALNO)
+
+str(pumas)
+```
+
+## Replace NAs
+```r
+pumas[is.na(pumas)] <- 0
+```
+
+## Remove negative
+```r
+pumas$HINCP[pumas$HINCP < 0] <- 0
+```
+
+## Convert `ADJINC` to Numeric 
+```r
+pumas$ADJINC <- as.numeric(as.character(pumas$ADJINC))
+```
+
+## Standardize household income for the base year (BY) using the ADJINC adjustment factor of 1019518 per https://www2.census.gov/programs-surveys/acs/tech_docs/pums/data_dict/PUMS_Data_Dictionary_2019-2023.pdf
+```r
+pumas$adj_inc <- pumas$HINCP * (1019518 / 1000000)
+```
+
+## Compare summary of old and new variable
+```r
+with(pumas, summary(HINCP))
+
+with(pumas, summary(adj_inc)
+```
+
+## Generate grouped a grouped income variable (the income groups should reflect the household survey from the transportation planning team)
+```r
+pumas$incgrp <-
+  Recode(
+    pumas$adj_inc,
+    recodes = "0:22841='$0 - $22,841'; 22842:44963='$22,842 - $44,963'; 44964:67446='$44,964 - $67,446'; 67447:112410='$67,447 - $112,410'; 112411:1471776.2='$112,411+'; else = NA",
+    as.factor = TRUE,
+    levels = c(
+      "$0 - $22,841",
+      "$22,842 - $44,963",
+      "$44,964 - $67,446",
+      "$67,447 - $112,410",
+      "$112,411+"
+    )
+  )
+```
+
 ## Generate grouped household size variable
 ```r
 pumas$hhsize <- Recode(pumas$NP, recodes = "1=1; 2=2; 3=3; 4=4; 5:20='5+'; else=NA", as.factor = T)
@@ -99,6 +157,13 @@ pumas$hhsize <- Recode(pumas$NP, recodes = "1=1; 2=2; 3=3; 4=4; 5:20='5+'; else=
 ## Create flag variable for workers in the household
 ```r
 pumas$worker <- factor(ifelse(pumas$ESR == 1, "1", ifelse(pumas$ESR == 2, "1", NA)))
+```
+
+## Create a flag to identify workers in the household
+```r
+pumas %>%
+  group_by(SERIALNO) %>%
+  mutate(wihh = sum(worker == 1, na.rm = TRUE)) -> pumas
 ```
 
 ## Create flag to identify workers in the household
@@ -110,7 +175,11 @@ pumas <- pumas %>%
 
 ## Generate grouped number of workers in household variable
 ```r
-pumas$hhworker <- factor(ifelse(pumas$wihh == 0, "0", ifelse(pumas$wihh == 1, "1", ifelse(pumas$wihh >= 2, "2+", NA))))
+pumas$hhworker <- factor(
+  ifelse(pumas$wihh == 0, "0", 
+         ifelse(pumas$wihh == 1, "1", 
+                ifelse(pumas$wihh >= 2, "2+", NA_character_)))
+)
 ```
 
 ## Generate variable to distinguish different types of households
@@ -123,244 +192,129 @@ pumas$hhtype <- factor(ifelse(pumas$WGTP != 0, "1", ifelse(pumas$WGTP != 2, "2",
 pumas$hholder <- Recode(pumas$RELSHIPP, recodes = "20=1; else = 0", as.factor = T)
 ```
 
-## Generate grouped age variable
-```r
-pumas$agegrp <- Recode(
-  pumas$AGEP,
-  recodes =
-    "0:15='0-15';
-     16:19='16-19';
-     20:24='20-24';
-     25:29='25-29';
-     30:34='30-34';
-     35:39='35-39';
-     40:44='40-44';
-     45:49='45-49';
-     50:54='50-54';
-     55:59='55-59';
-     60:64='60-64';
-     65:69='65-69';
-     70:74='70-74';
-     75:79='75-79';
-     80:92='80+';
-     else = NA",
-  as.factor = T,
-  levels = c(
-    "0-15", "16-19", "20-24", "25-29", "30-34",
-    "35-39", "40-44", "45-49", "50-54", "55-59",
-    "60-64", "65-69", "70-74", "75-79", "80+"
-  )
-)
-```
-
-## Create flag variable to identify workers by sex
-```r
-pumas$SEX_Recode <- factor(ifelse(pumas$SEX == 1, "Male", ifelse(pumas$SEX == 2, "Female", NA)))
-```
-
-## View the first few rows to verify
-```r
-head(pumas)
-```
-
-## Check data type of key variables
-```r
-class(pumas$HISP)   # HISP data type
-class(pumas$RAC1P)  # RAC1P data type
-class(pumas$PWGTP)  # PWGTP data type
-```
-
-## Convert HISP and RAC1P to numeric if they are characters
-```r
-pumas <- pumas %>%
-  mutate(
-    HISP = as.numeric(HISP),
-    # Ensure HISP is numeric
-    RAC1P = as.numeric(RAC1P),
-    # Ensure RAC1P is numeric
-    
-    # Identify Hispanic Population: HISP (2-24) AND RAC1P (1-9)
-    Hispanic = ifelse(HISP >= 2 &
-                        HISP <= 24 &
-                        RAC1P >= 1 & RAC1P <= 9, PWGTP, 0),
-    
-    # Identify White Alone Population: HISP (1) AND RAC1P (1)
-    White_Alone = ifelse(HISP == 1 & RAC1P == 1, PWGTP, 0)
-  )
-```
-
-## Create flag variables for Hispanic and White Alone households
-```r
-pumas <- pumas %>%
-  mutate(
-    HISP_FLAG = ifelse(HISP >= 2 & HISP <= 24 & RAC1P >= 1 & RAC1P <= 9, "HISPANIC", NA),
-    WHITE_FLAG = ifelse(HISP == 1 & RAC1P == 1, "WHITE_ALONE", NA)
-  )
-```
-
 ## View updated dataset with weights applied
 ```r
 head(pumas)
 ```
 
-## Summarize the weighted totals for Hispanic and White Alone populations
-```r
-hispanic_summary <- pumas %>%
-  summarize(
-    Total_Hispanic = sum(Hispanic, na.rm = TRUE),
-    Total_White_Alone = sum(White_Alone, na.rm = TRUE)
-  )
-```
-
-## Print the summarized results
-```r
-print(hispanic_summary)
-```
-
-## Ensure correct column types
-```r
-pumas <- pumas %>%
-  mutate(
-    county = as.character(county),
-    agegrp = as.character(agegrp),
-    HISP_FLAG = as.character(HISP_FLAG),
-    WHITE_FLAG = as.character(WHITE_FLAG),
-    hhsize = as.character(hhsize),
-    hhworker = as.character(hhworker),
-    SEX_Recode = as.character(SEX_Recode),
-    PWGTP = as.numeric(PWGTP)
-  )
-```
-
 ## Aggregate household data if householder is present
 ```r
-Bexar_all <- pumas %>%
-  group_by(county, agegrp, HISP_FLAG, WHITE_FLAG, hhsize, hhworker, SEX_Recode) %>%
-  summarize(n = sum(PWGTP, na.rm = TRUE), .groups = "drop")
-```
-
-## Identify list columns (if any)
-```r
-list_cols <- map_lgl(Bexar_all, is.list)
-print(names(Bexar_all)[list_cols])
-```
-
-## Ensure no duplicate groupings
-```r
-Bexar_all <- Bexar_all %>%
-  group_by(county, agegrp, HISP_FLAG, WHITE_FLAG, hhsize) %>%
-  summarize(n = sum(n, na.rm = TRUE), .groups = "drop")
-```
-
-## Filter out rows with NA in HISP_FLAG or hhsize
-```r
-Bexar_all <- Bexar_all %>%
-  filter(!is.na(HISP_FLAG) & !is.na(hhsize))
-```
-
-## Replace NA values in WHITE_FLAG with "WHITE_ALONE"
-```r
-Bexar_all <- Bexar_all %>%
-  mutate(WHITE_FLAG = ifelse(is.na(WHITE_FLAG), "WHITE_ALONE", WHITE_FLAG))
+hhinc_all <-
+  pumas %>%
+  filter(hholder == 1) %>%
+  group_by(county, incgrp, hhsize, hhworker) %>%
+  dplyr::count(hhworker, wt = WGTP, na.rm = TRUE)
 ```
 
 ## Apply pivot_wider with correct values_fill to ceeate a multi-dimensional contingency table
 ```r
-multid <- pivot_wider(
-  Bexar_all,
-  id_cols = c("county", "agegrp"),
-  names_from = c("HISP_FLAG", "hhsize"),
-  values_from = "n",
-  values_fill = list("n" = 0)  # Ensure named list for values_fill with correct type
+multid_incdist <- pivot_wider(
+  hhinc_all,
+  id_cols = c(county, incgrp),
+  values_fill = 0,
+  names_from = c(hhworker, hhsize),
+  values_from = n
+)
+```
+
+##  Add a Row Total, making sure the data is not grouped
+```r
+multid_incdist <- multid_incdist %>%
+  ungroup() %>%
+  # For each row, sum all numeric columns
+  mutate(Total = rowSums(across(where(is.numeric)), na.rm = TRUE))
+```
+
+## Summarize each numeric column (summing over all rows)
+```r
+total_row <- multid_incdist %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE)) %>%
+  # Label this row for your ID columns
+  mutate(county = "", incgrp = "Total") %>%
+  # Reorder columns so county and incgrp appear first
+  select(county, incgrp, everything())
+```
+
+## Append the "Total" row to the bottom of your data frame
+```r
+multid_incdist <- bind_rows(multid_incdist, total_row)
+````
+
+## Identify the grand total from the final row's "Total" column
+grand_total <- multid_incdist %>%
+  filter(incgrp == "Total") %>%
+  pull(Total)
+
+## Convert each numeric column to its fraction of the grand total
+multid_incdist_fraction <- multid_incdist %>%
+  mutate(across(where(is.numeric), ~ .x / grand_total))
+
+## Outputs
+
+## Side-by-Side via left_join() with Suffixes for table output
+```r
+combined_table <- left_join(
+  multid_incdist,
+  multid_incdist_fraction,
+  by = c("county", "incgrp"),
+  suffix = c("_abs", "_fraction")
+)
+```
+
+## OR
+## Rename numeric columns in the fraction table to add a "_fraction" suffix
+```r
+multid_incdist_fraction2 <- multid_incdist_fraction %>%
+  rename_with(~ paste0(.x, "_fraction"), where(is.numeric))
+
+## Bind the columns side by side
+combined_table <- bind_cols(
+  multid_incdist,
+  multid_incdist_fraction2 %>% select(ends_with("_fraction"))
 )
 ```
 
 ## Save the processed data to a CSV file
 ```r
-write.csv(multid, "...", row.names = FALSE)
+write.csv(combined_table, "...")
 ```
 
-## Checking the data 
-The output of the data is found on the table below:
+## This is the output in absolute value format
 
-| county   | agegrp   |   HISPANIC_1 |   HISPANIC_2 |   HISPANIC_3 |   HISPANIC_4 |   HISPANIC_5+ |   Total      |
-|:---------|:---------|-------------:|-------------:|-------------:|-------------:|--------------:|-------------:|
-| Bexar    | 0-15     |          597 |        11804 |        45282 |        86024 |        156458 |       300165 |
-| Bexar    | 16-19    |         3744 |         6261 |        13687 |        20824 |         32806 |        77322 |
-| Bexar    | 20-24    |         8030 |        17807 |        20249 |        21395 |         26046 |        93527 |
-| Bexar    | 25-29    |        10804 |        23306 |        20213 |        19566 |         21495 |        95384 |
-| Bexar    | 30-34    |         8938 |        19837 |        19623 |        19277 |         26288 |        93963 |
-| Bexar    | 35-39    |         7606 |        15429 |        16716 |        21725 |         27158 |        88634 |
-| Bexar    | 40-44    |         7651 |        12772 |        18172 |        20771 |         26476 |        85842 |
-| Bexar    | 45-49    |         6590 |        14890 |        17057 |        19901 |         17008 |        75446 |
-| Bexar    | 50-54    |         8024 |        18242 |        14180 |        14410 |         12379 |        67235 |
-| Bexar    | 55-59    |         8513 |        18565 |        14392 |         9497 |          9315 |        60282 |
-| Bexar    | 60-64    |        10353 |        20617 |         9640 |         5952 |          7346 |        53908 |
-| Bexar    | 65-69    |         9615 |        16976 |         6576 |         4079 |          5106 |        42352 |
-| Bexar    | 70-74    |         8282 |        14032 |         4814 |         3252 |          3419 |        33799 |
-| Bexar    | 75-79    |         5365 |         8810 |         2803 |         1853 |          2160 |        20991 |
-| Bexar    | 80+      |         7581 |         8380 |         3919 |         2236 |          1884 |        24000 |
-| **Total**|          |       111693 |       227728 |       227323 |       270762 |        375344 |  **1212850** |
+| county | incgrp              | 0_1   | 1_1   | 0_2   | 1_2   | 2+_2  | 0_3   | 1_3   | 2+_3  | 0_4   | 1_4   | 2+_4  | 0_5+  | 1_5+  | 2+_5+ | Total  |
+|--------|---------------------|-------|-------|-------|-------|-------|-------|-------|-------|-------|-------|-------|-------|-------|-------|--------|
+| Bexar  | $0 - $22,841        | 46218 | 20006 | 13141 | 9606  | 2372  | 4779  | 6598  | 1238  | 2816  | 3713  | 1081  | 2408  | 4551  | 825   | 119352 |
+| Bexar  | $22,842 - $44,963   | 18150 | 39993 | 12173 | 18034 | 8102  | 2706  | 10335 | 5011  | 1148  | 7615  | 4688  | 1377  | 6185  | 4950  | 140467 |
+| Bexar  | $44,964 - $67,446    | 11057 | 32266 | 8412  | 16026 | 15859 | 2047  | 8204  | 10051 | 953   | 6036  | 7526  | 685   | 5408  | 7788  | 132318 |
+| Bexar  | $67,447 - $112,410   | 5985  | 22157 | 11528 | 18666 | 27222 | 2094  | 10703 | 20604 | 788   | 7625  | 17195 | 777   | 4887  | 17104 | 167335 |
+| Bexar  | $112,411+           | 2829  | 10348 | 8469  | 16575 | 34467 | 1192  | 7166  | 28313 | 784   | 6930  | 31339 | 685   | 4907  | 26926 | 180930 |
+|        | Total               | 84239 | 124770| 53723 | 78907 | 88022 | 12818 | 43006 | 65217 | 6489  | 31919 | 61829 | 5932  | 25938 | 57593 | 740402 |
 
-The total number of Hispanics in Bexar County calculated here (1,212,850), categorized by age and household size (1-person, 2-person, 3-person, 4-person, and 5+ person households), closely aligns with the 2023 ACS 5-year estimate of 1,212,855. This estimate can be verified through the Census Bureau's official data portal: [ACS 2023 5-Year Hispanic or Latino Data for Bexar County](https://data.census.gov/table/ACSDP5Y2023.DP05?q=Hispanic+or+Latino&g=050XX00US48029).
+## This is the output in fraction format
 
-# Population Distribution by Age Group using ggplot2 visualizations
-### Summary of Visualizations
+| county | incgrp              | 0_1    | 1_1    | 0_2    | 1_2    | 2+_2   | 0_3    | 1_3    | 2+_3   | 0_4    | 1_4    | 2+_4   | 0_5+   | 1_5+   | 2+_5+  | Total  |
+|--------|---------------------|--------|--------|--------|--------|--------|--------|--------|--------|--------|--------|--------|--------|--------|--------|--------|
+| Bexar  | $0 - $22,841        | 0.0624 | 0.0270 | 0.0178 | 0.0130 | 0.0032 | 0.0065 | 0.0089 | 0.0017 | 0.0038 | 0.0050 | 0.0015 | 0.0033 | 0.0062 | 0.0011 | 0.1613 |
+| Bexar  | $22,842 - $44,963   | 0.0245 | 0.0540 | 0.0165 | 0.0244 | 0.0109 | 0.0037 | 0.0140 | 0.0068 | 0.0016 | 0.0103 | 0.0063 | 0.0019 | 0.0084 | 0.0067 | 0.1898 |
+| Bexar  | $44,964 - $67,446    | 0.0149 | 0.0436 | 0.0114 | 0.0216 | 0.0214 | 0.0028 | 0.0111 | 0.0136 | 0.0013 | 0.0082 | 0.0102 | 0.0009 | 0.0073 | 0.0105 | 0.1787 |
+| Bexar  | $67,447 - $112,410   | 0.0081 | 0.0299 | 0.0156 | 0.0252 | 0.0368 | 0.0028 | 0.0145 | 0.0278 | 0.0011 | 0.0103 | 0.0233 | 0.0010 | 0.0066 | 0.0231 | 0.2260 |
+| Bexar  | $112,411+           | 0.0038 | 0.0140 | 0.0114 | 0.0224 | 0.0466 | 0.0016 | 0.0097 | 0.0383 | 0.0011 | 0.0094 | 0.0423 | 0.0009 | 0.0066 | 0.0364 | 0.2444 |
+|        | Total               | 0.1138 | 0.1685 | 0.0725 | 0.1066 | 0.1189 | 0.0173 | 0.0581 | 0.0881 | 0.0088 | 0.0431 | 0.0835 | 0.0080 | 0.0350 | 0.0778 | 1.0000 |
 
-The visualizations created in this analysis aim to clearly illustrate the demographic composition of the Hispanic population in Bexar County, Texas. They specifically highlight the distribution of this population across various age groups and household sizes. Utilizing bar charts and stacked bar graphs generated with `ggplot2`, these visualizations facilitate quick interpretation of demographic patterns, making it easier to identify trends and differences in population composition across multiple dimensions.
-## Population Distribution by Age Group
-
+## Household Composition by Income Group visualization
 ```r
-df_long <- multid %>%
-  pivot_longer(cols = starts_with("HISPANIC"), 
-               names_to = "Household_Size", 
-               values_to = "Population") %>%
-  group_by(agegrp) %>%
-  summarize(Total = sum(Population, na.rm = TRUE))
-
-# Plot with formatted y-axis
-ggplot(df_long, aes(x = agegrp, y = Total)) +
-  geom_bar(stat = "identity", fill = "steelblue") +
-  labs(title = "Hispanic Population by Age Group",
-       x = "Age Group",
-       y = "Population") +
-  scale_y_continuous(labels = comma) +  # adds comma formatting
+ggplot(pumas, aes(x = incgrp, fill = hhworker)) +
+  geom_bar(position = "dodge", aes(weight = WGTP)) +
+  scale_y_continuous(labels = scales::comma) +
+  scale_fill_brewer(palette = "Set2") +  # Change the palette as desired
+  labs(
+    title = "Household Composition by Income Group",
+    x = "Income Group",
+    y = "Weighted Count",
+    fill = "Workers in HH"
+  ) +
   theme_minimal()
 ```
-![image](https://github.com/user-attachments/assets/1017b85b-02bb-443f-a81d-69ee05a959ff)
 
-## Stacked Bar Chart by Age Group and Household Size
-```r
-df_stacked <- multid %>%
-  pivot_longer(cols = starts_with("HISPANIC"), 
-               names_to = "Household_Size", 
-               values_to = "Population")
-
-ggplot(df_stacked, aes(x = agegrp, y = Population, fill = Household_Size)) +
-  geom_bar(stat = "identity") +
-  labs(title = "Hispanic Population by Age Group and Household Size",
-       x = "Age Group",
-       y = "Population",
-       fill = "Household Size") +
-  theme_minimal() +
-  scale_fill_brewer(palette = "Set3")
-```
-![image](https://github.com/user-attachments/assets/448aa55c-9e9e-4636-8276-a3b1024745dd)
-
-
-## Heatmap of Population by Age Group and Household Size
-```r
-ggplot(df_stacked, aes(x = Household_Size, y = agegrp, fill = Population)) +
-  geom_tile(color = "white") +
-  labs(title = "Heatmap of Hispanic Population by Age and Household Size",
-       x = "Household Size",
-       y = "Age Group",
-       fill = "Population") +
-  scale_fill_gradient(low = "lightyellow", high = "red") +
-  theme_minimal()
-```
-![image](https://github.com/user-attachments/assets/7d59edf8-187c-4baa-b9d3-db43066b61d8)
-
-
-
+![image](https://github.com/user-attachments/assets/4d7a2438-5e65-4ebf-a2e9-2ec628ac9986)
 
